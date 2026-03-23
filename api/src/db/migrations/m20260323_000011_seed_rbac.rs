@@ -6,9 +6,8 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let db = manager.get_connection();
+        use argon2::{Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng};
 
-        // All permissions as JSON array
         let all_permissions = serde_json::json!([
             "admin_users:read", "admin_users:write",
             "roles:read", "roles:write",
@@ -20,47 +19,152 @@ impl MigrationTrait for Migration {
             "certificates:read", "certificates:write"
         ]);
 
-        // Hash the default password using argon2
-        use argon2::{Argon2, PasswordHasher, password_hash::SaltString, password_hash::rand_core::OsRng};
         let salt = SaltString::generate(&mut OsRng);
         let password_hash = Argon2::default()
             .hash_password(b"changeme123", &salt)
             .map_err(|e| DbErr::Custom(format!("password hash failed: {e}")))?
             .to_string();
 
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let now = chrono::Utc::now().to_rfc3339();
         let role_id = uuid::Uuid::new_v4().to_string();
         let user_id = uuid::Uuid::new_v4().to_string();
         let user_role_id = uuid::Uuid::new_v4().to_string();
 
-        // Insert super_admin role with all permissions
-        db.execute_unprepared(&format!(
-            "INSERT INTO roles (id, name, description, permissions, created_at, updated_at) VALUES ('{role_id}', 'super_admin', 'Full platform access', '{}', '{now}', '{now}')",
-            all_permissions.to_string().replace('\'', "''")
-        ))
-        .await?;
+        // Insert super_admin role
+        manager
+            .exec_stmt(
+                Query::insert()
+                    .into_table(Roles::Table)
+                    .columns([
+                        Roles::Id,
+                        Roles::Name,
+                        Roles::Description,
+                        Roles::Permissions,
+                        Roles::CreatedAt,
+                        Roles::UpdatedAt,
+                    ])
+                    .values_panic([
+                        role_id.clone().into(),
+                        "super_admin".into(),
+                        "Full platform access".into(),
+                        all_permissions.to_string().into(),
+                        now.clone().into(),
+                        now.clone().into(),
+                    ])
+                    .to_owned(),
+            )
+            .await?;
 
         // Insert default admin user
-        db.execute_unprepared(&format!(
-            "INSERT INTO admin_users (id, email, password_hash, display_name, is_active, created_at, updated_at) VALUES ('{user_id}', 'admin@smartid.local', '{}', 'Super Admin', 1, '{now}', '{now}')",
-            password_hash.replace('\'', "''")
-        ))
-        .await?;
+        manager
+            .exec_stmt(
+                Query::insert()
+                    .into_table(AdminUsers::Table)
+                    .columns([
+                        AdminUsers::Id,
+                        AdminUsers::Email,
+                        AdminUsers::PasswordHash,
+                        AdminUsers::DisplayName,
+                        AdminUsers::IsActive,
+                        AdminUsers::CreatedAt,
+                        AdminUsers::UpdatedAt,
+                    ])
+                    .values_panic([
+                        user_id.clone().into(),
+                        "admin@smartid.local".into(),
+                        password_hash.into(),
+                        "Super Admin".into(),
+                        true.into(),
+                        now.clone().into(),
+                        now.clone().into(),
+                    ])
+                    .to_owned(),
+            )
+            .await?;
 
         // Assign super_admin role to the default user
-        db.execute_unprepared(&format!(
-            "INSERT INTO admin_user_roles (id, admin_user_id, role_id, created_at) VALUES ('{user_role_id}', '{user_id}', '{role_id}', '{now}')"
-        ))
-        .await?;
+        manager
+            .exec_stmt(
+                Query::insert()
+                    .into_table(AdminUserRoles::Table)
+                    .columns([
+                        AdminUserRoles::Id,
+                        AdminUserRoles::AdminUserId,
+                        AdminUserRoles::RoleId,
+                        AdminUserRoles::CreatedAt,
+                    ])
+                    .values_panic([
+                        user_role_id.into(),
+                        user_id.into(),
+                        role_id.into(),
+                        now.into(),
+                    ])
+                    .to_owned(),
+            )
+            .await?;
 
         Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let db = manager.get_connection();
-        db.execute_unprepared("DELETE FROM admin_user_roles").await?;
-        db.execute_unprepared("DELETE FROM admin_users WHERE email = 'admin@smartid.local'").await?;
-        db.execute_unprepared("DELETE FROM roles WHERE name = 'super_admin'").await?;
+        manager
+            .exec_stmt(
+                Query::delete()
+                    .from_table(AdminUserRoles::Table)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .exec_stmt(
+                Query::delete()
+                    .from_table(AdminUsers::Table)
+                    .and_where(Expr::col(AdminUsers::Email).eq("admin@smartid.local"))
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .exec_stmt(
+                Query::delete()
+                    .from_table(Roles::Table)
+                    .and_where(Expr::col(Roles::Name).eq("super_admin"))
+                    .to_owned(),
+            )
+            .await?;
+
         Ok(())
     }
+}
+
+#[derive(DeriveIden)]
+enum Roles {
+    Table,
+    Id,
+    Name,
+    Description,
+    Permissions,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum AdminUsers {
+    Table,
+    Id,
+    Email,
+    PasswordHash,
+    DisplayName,
+    IsActive,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum AdminUserRoles {
+    Table,
+    Id,
+    AdminUserId,
+    RoleId,
+    CreatedAt,
 }
