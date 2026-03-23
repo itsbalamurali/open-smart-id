@@ -13,7 +13,7 @@ mod db;
 mod models;
 mod services;
 
-use api::{AppApi, AuthenticationApi, InternalApi, SessionApi, SignatureApi};
+use api::{AdminApi, AppApi, AuthenticationApi, InternalApi, SessionApi, SignatureApi};
 use services::{CertificateService, NotificationService, SessionNotifier};
 
 #[derive(Clone)]
@@ -70,6 +70,7 @@ async fn main() -> Result<(), std::io::Error> {
             SessionApi,
             InternalApi,
             AppApi,
+            AdminApi,
         ),
         "Smart-ID API",
         "3.1",

@@ -1,5 +1,6 @@
 use poem_openapi::Tags;
 
+pub mod admin;
 pub mod app;
 pub mod authentication;
 pub mod internal;
@@ -18,8 +19,11 @@ pub enum ApiTags {
     Internal,
     /// Mobile app endpoints
     App,
+    /// Admin: Platform management endpoints
+    Admin,
 }
 
+pub use admin::AdminApi;
 pub use app::AppApi;
 pub use authentication::AuthenticationApi;
 pub use internal::InternalApi;
