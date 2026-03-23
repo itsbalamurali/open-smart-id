@@ -1,17 +1,17 @@
 use poem::web::Data;
 use poem_openapi::{Enum, Object, OpenApi, param::Path, param::Query, payload::Json};
-use sea_orm::*;
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-use crate::db::entities::{device, relying_party, session};
 use crate::models::*;
 use crate::services::account::AccountService;
 use crate::services::device::DeviceService;
-use crate::services::relying_party::ServiceError;
+use crate::services::relying_party::RelyingPartyService;
 use crate::services::session::{
     FlowType, InteractionType, SessionCompletion, SessionEndResult, SessionService,
 };
+
+use super::helpers::resolve_cert_for_completion;
 
 // ── Request/Response types ──
 
@@ -279,48 +279,24 @@ impl AppApi {
         state: Data<&AppState>,
         #[oai(name = "deviceId")] device_id: Query<String>,
     ) -> Result<Json<PendingSessionsResponse>, ApiErrorResponse> {
-        let dev = device::Entity::find_by_id(&device_id.0)
-            .one(&state.db)
-            .await
-            .map_err(ServiceError::Db)?
-            .ok_or(ServiceError::NotFound(format!(
-                "device '{}' not found",
-                device_id.0
-            )))?;
+        let dev = DeviceService::find_by_id(&state.db, &device_id.0).await?;
 
-        let sessions = session::Entity::find()
-            .filter(session::Column::AccountId.eq(&dev.account_id))
-            .filter(session::Column::State.eq("RUNNING"))
-            .order_by_desc(session::Column::CreatedAt)
-            .all(&state.db)
-            .await
-            .map_err(ServiceError::Db)?;
+        let sessions =
+            SessionService::find_running_by_account(&state.db, &dev.account_id).await?;
 
-        let rp_ids: Vec<String> = sessions
-            .iter()
-            .map(|s| s.relying_party_id.clone())
-            .collect();
-        let rps: std::collections::HashMap<String, String> = relying_party::Entity::find()
-            .filter(relying_party::Column::Id.is_in(&rp_ids))
-            .all(&state.db)
-            .await
-            .map_err(ServiceError::Db)?
-            .into_iter()
-            .map(|rp| (rp.id, rp.name))
-            .collect();
-
-        let summaries = sessions
-            .into_iter()
-            .map(|s| {
-                let rp_name = rps.get(&s.relying_party_id).cloned();
-                PendingSessionSummary {
-                    session_id: s.id,
-                    kind: s.kind,
-                    relying_party_name: rp_name,
-                    created_at: s.created_at.to_rfc3339(),
-                }
-            })
-            .collect();
+        let mut summaries = Vec::with_capacity(sessions.len());
+        for s in sessions {
+            let rp_name = RelyingPartyService::find_by_id(&state.db, &s.relying_party_id)
+                .await
+                .ok()
+                .map(|rp| rp.name);
+            summaries.push(PendingSessionSummary {
+                session_id: s.id,
+                kind: s.kind,
+                relying_party_name: rp_name,
+                created_at: s.created_at.to_rfc3339(),
+            });
+        }
 
         Ok(Json(PendingSessionsResponse {
             sessions: summaries,
@@ -341,17 +317,12 @@ impl AppApi {
         state: Data<&AppState>,
         session_id: Path<String>,
     ) -> Result<Json<AppSessionDetailResponse>, ApiErrorResponse> {
-        let sess = SessionService::find(&state.db, &session_id.0)
-            .await?
-            .ok_or(ServiceError::NotFound(format!(
-                "session '{}' not found",
-                session_id.0
-            )))?;
+        let sess = SessionService::find_by_id(&state.db, &session_id.0).await?;
 
-        let rp = relying_party::Entity::find_by_id(&sess.relying_party_id)
-            .one(&state.db)
+        let rp_name = RelyingPartyService::find_by_id(&state.db, &sess.relying_party_id)
             .await
-            .map_err(ServiceError::Db)?;
+            .ok()
+            .map(|rp| rp.name);
 
         let vc = sess.vc_value.as_ref().map(|val| VC {
             vc_type: VerificationCodeType::Numeric4,
@@ -362,7 +333,7 @@ impl AppApi {
             session_id: sess.id,
             kind: sess.kind,
             state: sess.state,
-            relying_party_name: rp.map(|r| r.name),
+            relying_party_name: rp_name,
             interactions: sess.interactions,
             vc,
             hash_algorithm: sess.hash_algorithm,
@@ -386,12 +357,7 @@ impl AppApi {
         session_id: Path<String>,
         body: Json<ConfirmSessionRequest>,
     ) -> Result<Json<AppSessionActionResponse>, ApiErrorResponse> {
-        let sess = SessionService::find(&state.db, &session_id.0)
-            .await?
-            .ok_or(ServiceError::NotFound(format!(
-                "session '{}' not found",
-                session_id.0
-            )))?;
+        let sess = SessionService::find_by_id(&state.db, &session_id.0).await?;
 
         let (document_number, cert_value, cert_level) =
             resolve_cert_for_completion(&state, &sess).await?;
@@ -465,49 +431,5 @@ impl AppApi {
             end_result: completed.end_result.unwrap_or_default(),
             document_number: None,
         }))
-    }
-}
-
-/// Resolve certificate for session completion (shared by AppApi and InternalApi).
-pub async fn resolve_cert_for_completion(
-    state: &AppState,
-    sess: &session::Model,
-) -> Result<(Option<String>, Option<String>, Option<String>), ApiErrorResponse> {
-    let account = match &sess.account_id {
-        Some(id) => crate::db::entities::account::Entity::find_by_id(id)
-            .one(&state.db)
-            .await
-            .map_err(ServiceError::Db)?,
-        None => Some(AccountService::create_anonymous(&state.db).await?),
-    };
-
-    let Some(acct) = account else {
-        return Ok((None, None, None));
-    };
-
-    match sess.kind.as_str() {
-        "authentication" => {
-            let cert = state
-                .certificate
-                .get_or_issue_auth_cert(&state.db, &acct.id, &acct.document_number)
-                .await?;
-            Ok((
-                Some(acct.document_number),
-                Some(cert.cert_value),
-                Some(cert.cert_level),
-            ))
-        }
-        "signing" => {
-            let cert = state
-                .certificate
-                .get_or_issue_signing_cert(&state.db, &acct.id, &acct.document_number)
-                .await?;
-            Ok((
-                Some(acct.document_number),
-                Some(cert.cert_value),
-                Some(cert.cert_level),
-            ))
-        }
-        _ => Ok((Some(acct.document_number), None, None)),
     }
 }

@@ -1,5 +1,9 @@
 pub mod account;
+pub mod admin_user;
+pub mod admin_user_role;
+pub mod audit_log;
 pub mod certificate;
 pub mod device;
 pub mod relying_party;
+pub mod role;
 pub mod session;

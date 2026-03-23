@@ -4,8 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::models::*;
-use crate::services::account::AccountService;
-use crate::services::session::{SessionCompletion, SessionService};
+use crate::services::session::{
+    FlowType, InteractionType, SessionCompletion, SessionEndResult, SessionService,
+};
+
+use super::helpers::resolve_cert_for_completion;
 
 pub struct InternalApi;
 
@@ -50,15 +53,7 @@ impl InternalApi {
         session_id: Path<String>,
         body: Json<CompleteSessionRequest>,
     ) -> Result<Json<CompleteSessionResponse>, ApiErrorResponse> {
-        let session = SessionService::find(&state.db, &session_id.0)
-            .await?
-            .ok_or_else(|| {
-                ApiErrorResponse::NotFound(Json(ProblemDetails::new(
-                    404,
-                    "Not Found",
-                    &format!("session '{}' not found", session_id.0),
-                )))
-            })?;
+        let session = SessionService::find_by_id(&state.db, &session_id.0).await?;
 
         let end_result = SessionEndResult::from_str(&body.end_result);
         let flow_type = FlowType::from_str(&body.flow_type);
@@ -68,52 +63,7 @@ impl InternalApi {
             .and_then(InteractionType::from_str);
 
         let (document_number, cert_value, cert_level) = if end_result == SessionEndResult::Ok {
-            let account = match &session.account_id {
-                Some(id) => {
-                    use sea_orm::EntityTrait;
-                    crate::db::entities::account::Entity::find_by_id(id)
-                        .one(&state.db)
-                        .await
-                        .map_err(|e| {
-                            ApiErrorResponse::InternalServerError(Json(ProblemDetails::new(
-                                500,
-                                "Internal Server Error",
-                                &e.to_string(),
-                            )))
-                        })?
-                }
-                None => Some(AccountService::create_anonymous(&state.db).await?),
-            };
-
-            if let Some(acct) = account {
-                match session.kind.as_str() {
-                    "authentication" => {
-                        let cert = state
-                            .certificate
-                            .get_or_issue_auth_cert(&state.db, &acct.id, &acct.document_number)
-                            .await?;
-                        (
-                            Some(acct.document_number),
-                            Some(cert.cert_value),
-                            Some(cert.cert_level),
-                        )
-                    }
-                    "signing" => {
-                        let cert = state
-                            .certificate
-                            .get_or_issue_signing_cert(&state.db, &acct.id, &acct.document_number)
-                            .await?;
-                        (
-                            Some(acct.document_number),
-                            Some(cert.cert_value),
-                            Some(cert.cert_level),
-                        )
-                    }
-                    _ => (Some(acct.document_number), None, None),
-                }
-            } else {
-                (None, None, None)
-            }
+            resolve_cert_for_completion(&state, &session).await?
         } else {
             (None, None, None)
         };

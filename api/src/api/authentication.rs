@@ -4,9 +4,10 @@ use poem_openapi::{OpenApi, param::Path, payload::Json};
 use crate::AppState;
 use crate::models::*;
 use crate::services::account::AccountService;
-use crate::services::device::DeviceService;
 use crate::services::relying_party::RelyingPartyService;
 use crate::services::session::{CreateSessionParams, SessionKind, SessionService};
+
+use super::helpers::{device_link_credentials, device_link_response, send_fcm_push, share_md_client_ip};
 
 pub struct AuthenticationApi;
 
@@ -172,11 +173,7 @@ fn device_link_auth_params(
     account_id: Option<String>,
     req: &DeviceLinkAuthenticationRequest,
 ) -> CreateSessionParams {
-    let token = uuid::Uuid::new_v4().to_string().replace('-', "");
-    let secret = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        uuid::Uuid::new_v4().as_bytes(),
-    );
+    let (token, secret) = device_link_credentials();
     let pp = &req.signature_protocol_parameters;
 
     CreateSessionParams {
@@ -203,11 +200,7 @@ fn device_link_auth_params(
         linked_session_id: None,
         vc_type: None,
         vc_value: None,
-        share_md_client_ip_address: req
-            .request_properties
-            .as_ref()
-            .and_then(|p| p.share_md_client_ip_address)
-            .unwrap_or(false),
+        share_md_client_ip_address: share_md_client_ip(req.request_properties.as_ref()),
     }
 }
 
@@ -242,40 +235,6 @@ fn notification_auth_params(
         linked_session_id: None,
         vc_type: Some("numeric4".to_string()),
         vc_value: None,
-        share_md_client_ip_address: req
-            .request_properties
-            .as_ref()
-            .and_then(|p| p.share_md_client_ip_address)
-            .unwrap_or(false),
-    }
-}
-
-fn send_fcm_push(state: &AppState, account_id: &str, session_id: &str, kind: &str, rp_name: &str) {
-    if let Some(ref notif) = state.notification {
-        let notif = notif.clone();
-        let db = state.db.clone();
-        let account_id = account_id.to_string();
-        let session_id = session_id.to_string();
-        let kind = kind.to_string();
-        let rp_name = rp_name.to_string();
-        tokio::spawn(async move {
-            let devices = DeviceService::find_active_by_account(&db, &account_id)
-                .await
-                .unwrap_or_default();
-            if !devices.is_empty() {
-                notif
-                    .notify_session_created(&devices, &session_id, &kind, &rp_name)
-                    .await;
-            }
-        });
-    }
-}
-
-fn device_link_response(session: &crate::db::entities::session::Model) -> DeviceLinkResponse {
-    DeviceLinkResponse {
-        session_id: session.id.clone(),
-        session_token: session.session_token.clone().unwrap_or_default(),
-        session_secret: session.session_secret.clone().unwrap_or_default(),
-        device_link_base: session.device_link_base.clone().unwrap_or_default(),
+        share_md_client_ip_address: share_md_client_ip(req.request_properties.as_ref()),
     }
 }

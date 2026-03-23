@@ -384,6 +384,44 @@ impl SessionNotifier {
 pub struct SessionService;
 
 impl SessionService {
+    super::impl_crud_basics!(session::Entity, "Session");
+
+    pub async fn list(
+        db: &DatabaseConnection,
+        page: u64,
+        per_page: u64,
+        state_filter: Option<&str>,
+        rp_id_filter: Option<&str>,
+    ) -> Result<(Vec<session::Model>, u64), ServiceError> {
+        let mut query = session::Entity::find().order_by_desc(session::Column::CreatedAt);
+        if let Some(s) = state_filter {
+            query = query.filter(session::Column::State.eq(s));
+        }
+        if let Some(rp) = rp_id_filter {
+            query = query.filter(session::Column::RelyingPartyId.eq(rp));
+        }
+        let paginator = query.paginate(db, per_page);
+        let total = paginator.num_items().await.map_err(ServiceError::Db)?;
+        let items = paginator
+            .fetch_page(page - 1)
+            .await
+            .map_err(ServiceError::Db)?;
+        Ok((items, total))
+    }
+
+    pub async fn find_running_by_account(
+        db: &DatabaseConnection,
+        account_id: &str,
+    ) -> Result<Vec<session::Model>, ServiceError> {
+        session::Entity::find()
+            .filter(session::Column::AccountId.eq(account_id))
+            .filter(session::Column::State.eq("RUNNING"))
+            .order_by_desc(session::Column::CreatedAt)
+            .all(db)
+            .await
+            .map_err(ServiceError::Db)
+    }
+
     pub async fn create(
         db: &DatabaseConnection,
         params: CreateSessionParams,
@@ -443,16 +481,6 @@ impl SessionService {
             .await
             .map_err(ServiceError::Db)?
             .ok_or(ServiceError::NotFound("session".to_string()))
-    }
-
-    pub async fn find(
-        db: &DatabaseConnection,
-        session_id: &str,
-    ) -> Result<Option<session::Model>, ServiceError> {
-        session::Entity::find_by_id(session_id)
-            .one(db)
-            .await
-            .map_err(ServiceError::Db)
     }
 
     pub async fn poll(

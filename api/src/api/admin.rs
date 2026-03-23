@@ -1,12 +1,15 @@
-use chrono::Utc;
 use poem::web::Data;
 use poem_openapi::{Object, OpenApi, param::Path, param::Query, payload::Json};
-use sea_orm::*;
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::db::entities::{account, certificate, device, relying_party, session};
 use crate::models::*;
+use crate::services::account::AccountService;
+use crate::services::certificate::CertificateService;
+use crate::services::device::DeviceService;
+use crate::services::relying_party::RelyingPartyService;
+use crate::services::session::SessionService;
 
 pub struct AdminApi;
 
@@ -185,7 +188,7 @@ impl From<device::Model> for DeviceResponse {
 // ── Certificate DTOs ──
 
 #[derive(Debug, Clone, Serialize, Deserialize, Object)]
-pub struct CertificateResponse {
+pub struct CertificateAdminResponse {
     pub id: String,
     #[oai(rename = "accountId")]
     pub account_id: String,
@@ -201,7 +204,7 @@ pub struct CertificateResponse {
     pub expires_at: String,
 }
 
-impl From<certificate::Model> for CertificateResponse {
+impl From<certificate::Model> for CertificateAdminResponse {
     fn from(m: certificate::Model) -> Self {
         Self {
             id: m.id,
@@ -226,6 +229,16 @@ pub struct PaginatedResponse<T: poem_openapi::types::Type + Send + Sync + poem_o
     pub per_page: u64,
 }
 
+// ── Helpers ──
+
+fn normalize_page(page: Option<u64>) -> u64 {
+    page.unwrap_or(1).clamp(1, u64::MAX)
+}
+
+fn normalize_per_page(per_page: Option<u64>) -> u64 {
+    per_page.unwrap_or(20).clamp(1, 100)
+}
+
 // ── Admin API implementation ──
 
 #[OpenApi(prefix_path = "/admin", tag = "super::ApiTags::Admin")]
@@ -244,21 +257,11 @@ impl AdminApi {
         page: Query<Option<u64>>,
         per_page: Query<Option<u64>>,
     ) -> Result<Json<PaginatedResponse<RelyingPartyResponse>>, ApiErrorResponse> {
-        let page = page.0.unwrap_or(1).clamp(1, u64::MAX);
-        let per_page = per_page.0.unwrap_or(20).clamp(1, 100);
-        let paginator = relying_party::Entity::find()
-            .order_by_desc(relying_party::Column::CreatedAt)
-            .paginate(&state.db, per_page);
-        let total = paginator.num_items().await.map_err(to_internal)?;
-        let items: Vec<RelyingPartyResponse> = paginator
-            .fetch_page(page - 1)
-            .await
-            .map_err(to_internal)?
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let page = normalize_page(page.0);
+        let per_page = normalize_per_page(per_page.0);
+        let (items, total) = RelyingPartyService::list(&state.db, page, per_page).await?;
         Ok(Json(PaginatedResponse {
-            items,
+            items: items.into_iter().map(Into::into).collect(),
             total,
             page,
             per_page,
@@ -276,11 +279,7 @@ impl AdminApi {
         state: Data<&AppState>,
         id: Path<String>,
     ) -> Result<Json<RelyingPartyResponse>, ApiErrorResponse> {
-        let rp = relying_party::Entity::find_by_id(&id.0)
-            .one(&state.db)
-            .await
-            .map_err(to_internal)?
-            .ok_or_else(|| not_found("Relying party"))?;
+        let rp = RelyingPartyService::find_by_id(&state.db, &id.0).await?;
         Ok(Json(rp.into()))
     }
 
@@ -295,27 +294,14 @@ impl AdminApi {
         state: Data<&AppState>,
         body: Json<CreateRelyingPartyRequest>,
     ) -> Result<Json<RelyingPartyResponse>, ApiErrorResponse> {
-        let now = Utc::now();
-        let id = uuid::Uuid::new_v4().to_string();
-        let model = relying_party::ActiveModel {
-            id: Set(id.clone()),
-            uuid: Set(body.uuid.clone()),
-            name: Set(body.name.clone()),
-            logo_url: Set(body.logo_url.clone()),
-            website_url: Set(body.website_url.clone()),
-            is_active: Set(true),
-            created_at: Set(now.into()),
-            updated_at: Set(now.into()),
-        };
-        relying_party::Entity::insert(model)
-            .exec(&state.db)
-            .await
-            .map_err(to_internal)?;
-        let rp = relying_party::Entity::find_by_id(&id)
-            .one(&state.db)
-            .await
-            .map_err(to_internal)?
-            .ok_or_else(|| not_found("Relying party"))?;
+        let rp = RelyingPartyService::create(
+            &state.db,
+            &body.uuid,
+            &body.name,
+            body.logo_url.clone(),
+            body.website_url.clone(),
+        )
+        .await?;
         Ok(Json(rp.into()))
     }
 
@@ -331,27 +317,16 @@ impl AdminApi {
         id: Path<String>,
         body: Json<UpdateRelyingPartyRequest>,
     ) -> Result<Json<RelyingPartyResponse>, ApiErrorResponse> {
-        let rp = relying_party::Entity::find_by_id(&id.0)
-            .one(&state.db)
-            .await
-            .map_err(to_internal)?
-            .ok_or_else(|| not_found("Relying party"))?;
-        let mut active: relying_party::ActiveModel = rp.into();
-        if let Some(name) = &body.name {
-            active.name = Set(name.clone());
-        }
-        if body.logo_url.is_some() {
-            active.logo_url = Set(body.logo_url.clone());
-        }
-        if body.website_url.is_some() {
-            active.website_url = Set(body.website_url.clone());
-        }
-        if let Some(is_active) = body.is_active {
-            active.is_active = Set(is_active);
-        }
-        active.updated_at = Set(Utc::now().into());
-        let updated = active.update(&state.db).await.map_err(to_internal)?;
-        Ok(Json(updated.into()))
+        let rp = RelyingPartyService::update(
+            &state.db,
+            &id.0,
+            body.name.clone(),
+            body.logo_url.clone(),
+            body.website_url.clone(),
+            body.is_active,
+        )
+        .await?;
+        Ok(Json(rp.into()))
     }
 
     /// Delete a relying party
@@ -365,13 +340,7 @@ impl AdminApi {
         state: Data<&AppState>,
         id: Path<String>,
     ) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
-        let result = relying_party::Entity::delete_by_id(&id.0)
-            .exec(&state.db)
-            .await
-            .map_err(to_internal)?;
-        if result.rows_affected == 0 {
-            return Err(not_found("Relying party"));
-        }
+        RelyingPartyService::delete(&state.db, &id.0).await?;
         Ok(Json(serde_json::json!({ "deleted": true })))
     }
 
@@ -389,21 +358,11 @@ impl AdminApi {
         page: Query<Option<u64>>,
         per_page: Query<Option<u64>>,
     ) -> Result<Json<PaginatedResponse<AccountResponse>>, ApiErrorResponse> {
-        let page = page.0.unwrap_or(1).clamp(1, u64::MAX);
-        let per_page = per_page.0.unwrap_or(20).clamp(1, 100);
-        let paginator = account::Entity::find()
-            .order_by_desc(account::Column::CreatedAt)
-            .paginate(&state.db, per_page);
-        let total = paginator.num_items().await.map_err(to_internal)?;
-        let items: Vec<AccountResponse> = paginator
-            .fetch_page(page - 1)
-            .await
-            .map_err(to_internal)?
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let page = normalize_page(page.0);
+        let per_page = normalize_per_page(per_page.0);
+        let (items, total) = AccountService::list(&state.db, page, per_page).await?;
         Ok(Json(PaginatedResponse {
-            items,
+            items: items.into_iter().map(Into::into).collect(),
             total,
             page,
             per_page,
@@ -421,11 +380,7 @@ impl AdminApi {
         state: Data<&AppState>,
         id: Path<String>,
     ) -> Result<Json<AccountResponse>, ApiErrorResponse> {
-        let acct = account::Entity::find_by_id(&id.0)
-            .one(&state.db)
-            .await
-            .map_err(to_internal)?
-            .ok_or_else(|| not_found("Account"))?;
+        let acct = AccountService::find_by_id(&state.db, &id.0).await?;
         Ok(Json(acct.into()))
     }
 
@@ -441,18 +396,12 @@ impl AdminApi {
         id: Path<String>,
         body: Json<UpdateAccountRequest>,
     ) -> Result<Json<AccountResponse>, ApiErrorResponse> {
-        let acct = account::Entity::find_by_id(&id.0)
-            .one(&state.db)
-            .await
-            .map_err(to_internal)?
-            .ok_or_else(|| not_found("Account"))?;
-        let mut active: account::ActiveModel = acct.into();
-        if let Some(status) = &body.status {
-            active.status = Set(status.clone());
-        }
-        active.updated_at = Set(Utc::now().into());
-        let updated = active.update(&state.db).await.map_err(to_internal)?;
-        Ok(Json(updated.into()))
+        let acct = if let Some(status) = &body.status {
+            AccountService::update_status(&state.db, &id.0, status).await?
+        } else {
+            AccountService::find_by_id(&state.db, &id.0).await?
+        };
+        Ok(Json(acct.into()))
     }
 
     /// Delete an account
@@ -466,13 +415,7 @@ impl AdminApi {
         state: Data<&AppState>,
         id: Path<String>,
     ) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
-        let result = account::Entity::delete_by_id(&id.0)
-            .exec(&state.db)
-            .await
-            .map_err(to_internal)?;
-        if result.rows_affected == 0 {
-            return Err(not_found("Account"));
-        }
+        AccountService::delete(&state.db, &id.0).await?;
         Ok(Json(serde_json::json!({ "deleted": true })))
     }
 
@@ -496,26 +439,18 @@ impl AdminApi {
         #[oai(name = "relyingPartyId")]
         rp_id: Query<Option<String>>,
     ) -> Result<Json<PaginatedResponse<SessionResponse>>, ApiErrorResponse> {
-        let page = page.0.unwrap_or(1).clamp(1, u64::MAX);
-        let per_page = per_page.0.unwrap_or(20).clamp(1, 100);
-        let mut query = session::Entity::find().order_by_desc(session::Column::CreatedAt);
-        if let Some(s) = &filter_state.0 {
-            query = query.filter(session::Column::State.eq(s.as_str()));
-        }
-        if let Some(rp) = &rp_id.0 {
-            query = query.filter(session::Column::RelyingPartyId.eq(rp.as_str()));
-        }
-        let paginator = query.paginate(&state.db, per_page);
-        let total = paginator.num_items().await.map_err(to_internal)?;
-        let items: Vec<SessionResponse> = paginator
-            .fetch_page(page - 1)
-            .await
-            .map_err(to_internal)?
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let page = normalize_page(page.0);
+        let per_page = normalize_per_page(per_page.0);
+        let (items, total) = SessionService::list(
+            &state.db,
+            page,
+            per_page,
+            filter_state.0.as_deref(),
+            rp_id.0.as_deref(),
+        )
+        .await?;
         Ok(Json(PaginatedResponse {
-            items,
+            items: items.into_iter().map(Into::into).collect(),
             total,
             page,
             per_page,
@@ -533,11 +468,7 @@ impl AdminApi {
         state: Data<&AppState>,
         id: Path<String>,
     ) -> Result<Json<SessionResponse>, ApiErrorResponse> {
-        let sess = session::Entity::find_by_id(&id.0)
-            .one(&state.db)
-            .await
-            .map_err(to_internal)?
-            .ok_or_else(|| not_found("Session"))?;
+        let sess = SessionService::find_by_id(&state.db, &id.0).await?;
         Ok(Json(sess.into()))
     }
 
@@ -552,13 +483,7 @@ impl AdminApi {
         state: Data<&AppState>,
         id: Path<String>,
     ) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
-        let result = session::Entity::delete_by_id(&id.0)
-            .exec(&state.db)
-            .await
-            .map_err(to_internal)?;
-        if result.rows_affected == 0 {
-            return Err(not_found("Session"));
-        }
+        SessionService::delete(&state.db, &id.0).await?;
         Ok(Json(serde_json::json!({ "deleted": true })))
     }
 
@@ -579,23 +504,12 @@ impl AdminApi {
         #[oai(name = "accountId")]
         account_id: Query<Option<String>>,
     ) -> Result<Json<PaginatedResponse<DeviceResponse>>, ApiErrorResponse> {
-        let page = page.0.unwrap_or(1).clamp(1, u64::MAX);
-        let per_page = per_page.0.unwrap_or(20).clamp(1, 100);
-        let mut query = device::Entity::find().order_by_desc(device::Column::CreatedAt);
-        if let Some(aid) = &account_id.0 {
-            query = query.filter(device::Column::AccountId.eq(aid.as_str()));
-        }
-        let paginator = query.paginate(&state.db, per_page);
-        let total = paginator.num_items().await.map_err(to_internal)?;
-        let items: Vec<DeviceResponse> = paginator
-            .fetch_page(page - 1)
-            .await
-            .map_err(to_internal)?
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let page = normalize_page(page.0);
+        let per_page = normalize_per_page(per_page.0);
+        let (items, total) =
+            DeviceService::list(&state.db, page, per_page, account_id.0.as_deref()).await?;
         Ok(Json(PaginatedResponse {
-            items,
+            items: items.into_iter().map(Into::into).collect(),
             total,
             page,
             per_page,
@@ -613,11 +527,7 @@ impl AdminApi {
         state: Data<&AppState>,
         id: Path<String>,
     ) -> Result<Json<DeviceResponse>, ApiErrorResponse> {
-        let dev = device::Entity::find_by_id(&id.0)
-            .one(&state.db)
-            .await
-            .map_err(to_internal)?
-            .ok_or_else(|| not_found("Device"))?;
+        let dev = DeviceService::find_by_id(&state.db, &id.0).await?;
         Ok(Json(dev.into()))
     }
 
@@ -632,13 +542,7 @@ impl AdminApi {
         state: Data<&AppState>,
         id: Path<String>,
     ) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
-        let result = device::Entity::delete_by_id(&id.0)
-            .exec(&state.db)
-            .await
-            .map_err(to_internal)?;
-        if result.rows_affected == 0 {
-            return Err(not_found("Device"));
-        }
+        DeviceService::delete(&state.db, &id.0).await?;
         Ok(Json(serde_json::json!({ "deleted": true })))
     }
 
@@ -658,24 +562,13 @@ impl AdminApi {
         /// Filter by account ID
         #[oai(name = "accountId")]
         account_id: Query<Option<String>>,
-    ) -> Result<Json<PaginatedResponse<CertificateResponse>>, ApiErrorResponse> {
-        let page = page.0.unwrap_or(1).clamp(1, u64::MAX);
-        let per_page = per_page.0.unwrap_or(20).clamp(1, 100);
-        let mut query = certificate::Entity::find().order_by_desc(certificate::Column::CreatedAt);
-        if let Some(aid) = &account_id.0 {
-            query = query.filter(certificate::Column::AccountId.eq(aid.as_str()));
-        }
-        let paginator = query.paginate(&state.db, per_page);
-        let total = paginator.num_items().await.map_err(to_internal)?;
-        let items: Vec<CertificateResponse> = paginator
-            .fetch_page(page - 1)
-            .await
-            .map_err(to_internal)?
-            .into_iter()
-            .map(Into::into)
-            .collect();
+    ) -> Result<Json<PaginatedResponse<CertificateAdminResponse>>, ApiErrorResponse> {
+        let page = normalize_page(page.0);
+        let per_page = normalize_per_page(per_page.0);
+        let (items, total) =
+            CertificateService::list(&state.db, page, per_page, account_id.0.as_deref()).await?;
         Ok(Json(PaginatedResponse {
-            items,
+            items: items.into_iter().map(Into::into).collect(),
             total,
             page,
             per_page,
@@ -692,12 +585,8 @@ impl AdminApi {
         &self,
         state: Data<&AppState>,
         id: Path<String>,
-    ) -> Result<Json<CertificateResponse>, ApiErrorResponse> {
-        let cert = certificate::Entity::find_by_id(&id.0)
-            .one(&state.db)
-            .await
-            .map_err(to_internal)?
-            .ok_or_else(|| not_found("Certificate"))?;
+    ) -> Result<Json<CertificateAdminResponse>, ApiErrorResponse> {
+        let cert = CertificateService::find_by_id(&state.db, &id.0).await?;
         Ok(Json(cert.into()))
     }
 
@@ -711,33 +600,8 @@ impl AdminApi {
         &self,
         state: Data<&AppState>,
         id: Path<String>,
-    ) -> Result<Json<CertificateResponse>, ApiErrorResponse> {
-        let cert = certificate::Entity::find_by_id(&id.0)
-            .one(&state.db)
-            .await
-            .map_err(to_internal)?
-            .ok_or_else(|| not_found("Certificate"))?;
-        let mut active: certificate::ActiveModel = cert.into();
-        active.is_active = Set(false);
-        let updated = active.update(&state.db).await.map_err(to_internal)?;
-        Ok(Json(updated.into()))
+    ) -> Result<Json<CertificateAdminResponse>, ApiErrorResponse> {
+        let cert = CertificateService::revoke(&state.db, &id.0).await?;
+        Ok(Json(cert.into()))
     }
-}
-
-// ── Helpers ──
-
-fn to_internal(e: DbErr) -> ApiErrorResponse {
-    ApiErrorResponse::InternalServerError(Json(ProblemDetails::new(
-        500,
-        "Internal Server Error",
-        &e.to_string(),
-    )))
-}
-
-fn not_found(entity: &str) -> ApiErrorResponse {
-    ApiErrorResponse::NotFound(Json(ProblemDetails::new(
-        404,
-        "Not Found",
-        &format!("{entity} not found"),
-    )))
 }

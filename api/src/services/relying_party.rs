@@ -8,6 +8,8 @@ use crate::db::entities::relying_party;
 pub struct RelyingPartyService;
 
 impl RelyingPartyService {
+    super::impl_crud_basics!(relying_party::Entity, "Relying party");
+
     pub async fn find_or_create(
         db: &DatabaseConnection,
         rp_uuid: &str,
@@ -43,25 +45,73 @@ impl RelyingPartyService {
             .ok_or(DbErr::RecordNotFound("relying_party".to_string()))
     }
 
-    pub async fn update(
+    pub async fn list(
+        db: &DatabaseConnection,
+        page: u64,
+        per_page: u64,
+    ) -> Result<(Vec<relying_party::Model>, u64), ServiceError> {
+        let paginator = relying_party::Entity::find()
+            .order_by_desc(relying_party::Column::CreatedAt)
+            .paginate(db, per_page);
+        let total = paginator.num_items().await.map_err(ServiceError::Db)?;
+        let items = paginator
+            .fetch_page(page - 1)
+            .await
+            .map_err(ServiceError::Db)?;
+        Ok((items, total))
+    }
+
+    pub async fn create(
         db: &DatabaseConnection,
         rp_uuid: &str,
+        rp_name: &str,
         logo_url: Option<String>,
         website_url: Option<String>,
     ) -> Result<relying_party::Model, ServiceError> {
-        let rp = relying_party::Entity::find()
-            .filter(relying_party::Column::Uuid.eq(rp_uuid))
-            .one(db)
+        let now = Utc::now();
+        let id = uuid::Uuid::new_v4().to_string();
+
+        let model = relying_party::ActiveModel {
+            id: Set(id.clone()),
+            uuid: Set(rp_uuid.to_string()),
+            name: Set(rp_name.to_string()),
+            logo_url: Set(logo_url),
+            website_url: Set(website_url),
+            is_active: Set(true),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+        };
+
+        relying_party::Entity::insert(model)
+            .exec(db)
             .await
-            .map_err(ServiceError::Db)?
-            .ok_or_else(|| ServiceError::NotFound("Relying party not found".into()))?;
+            .map_err(ServiceError::Db)?;
+
+        Self::find_by_id(db, &id).await
+    }
+
+    pub async fn update(
+        db: &DatabaseConnection,
+        id: &str,
+        name: Option<String>,
+        logo_url: Option<String>,
+        website_url: Option<String>,
+        is_active: Option<bool>,
+    ) -> Result<relying_party::Model, ServiceError> {
+        let rp = Self::find_by_id(db, id).await?;
 
         let mut active: relying_party::ActiveModel = rp.into();
+        if let Some(name) = name {
+            active.name = Set(name);
+        }
         if logo_url.is_some() {
             active.logo_url = Set(logo_url);
         }
         if website_url.is_some() {
             active.website_url = Set(website_url);
+        }
+        if let Some(is_active) = is_active {
+            active.is_active = Set(is_active);
         }
         active.updated_at = Set(Utc::now().into());
 

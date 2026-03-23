@@ -7,6 +7,27 @@ use crate::services::relying_party::ServiceError;
 pub struct DeviceService;
 
 impl DeviceService {
+    super::impl_crud_basics!(device::Entity, "Device");
+
+    pub async fn list(
+        db: &DatabaseConnection,
+        page: u64,
+        per_page: u64,
+        account_id_filter: Option<&str>,
+    ) -> Result<(Vec<device::Model>, u64), ServiceError> {
+        let mut query = device::Entity::find().order_by_desc(device::Column::CreatedAt);
+        if let Some(aid) = account_id_filter {
+            query = query.filter(device::Column::AccountId.eq(aid));
+        }
+        let paginator = query.paginate(db, per_page);
+        let total = paginator.num_items().await.map_err(ServiceError::Db)?;
+        let items = paginator
+            .fetch_page(page - 1)
+            .await
+            .map_err(ServiceError::Db)?;
+        Ok((items, total))
+    }
+
     /// Register a new device or update an existing one by FCM token.
     pub async fn register(
         db: &DatabaseConnection,

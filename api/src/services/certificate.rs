@@ -96,6 +96,37 @@ pub struct CertificateService {
 }
 
 impl CertificateService {
+    super::impl_crud_basics!(certificate::Entity, "Certificate");
+
+    pub async fn list(
+        db: &DatabaseConnection,
+        page: u64,
+        per_page: u64,
+        account_id_filter: Option<&str>,
+    ) -> Result<(Vec<certificate::Model>, u64), ServiceError> {
+        let mut query = certificate::Entity::find().order_by_desc(certificate::Column::CreatedAt);
+        if let Some(aid) = account_id_filter {
+            query = query.filter(certificate::Column::AccountId.eq(aid));
+        }
+        let paginator = query.paginate(db, per_page);
+        let total = paginator.num_items().await.map_err(ServiceError::Db)?;
+        let items = paginator
+            .fetch_page(page - 1)
+            .await
+            .map_err(ServiceError::Db)?;
+        Ok((items, total))
+    }
+
+    pub async fn revoke(
+        db: &DatabaseConnection,
+        id: &str,
+    ) -> Result<certificate::Model, ServiceError> {
+        let cert = Self::find_by_id(db, id).await?;
+        let mut active: certificate::ActiveModel = cert.into();
+        active.is_active = Set(false);
+        active.update(db).await.map_err(ServiceError::Db)
+    }
+
     pub fn new() -> Result<Self, rcgen::Error> {
         let ca_key_pair = KeyPair::generate()?;
 
@@ -118,31 +149,23 @@ impl CertificateService {
         self.ca.as_ref().pem()
     }
 
-    /// Find active auth cert for account, or issue a new one and persist.
-    pub async fn get_or_issue_auth_cert(
+    /// Find active cert for account by purpose ("authentication" or "signing"),
+    /// or issue a new one and persist.
+    pub async fn get_or_issue_cert(
         &self,
         db: &DatabaseConnection,
         account_id: &str,
         serial_number: &str,
+        purpose: &str,
     ) -> Result<certificate::Model, ServiceError> {
-        if let Some(cert) = Self::find_active(db, account_id, "authentication").await? {
+        if let Some(cert) = Self::find_active(db, account_id, purpose).await? {
             return Ok(cert);
         }
-        self.issue_and_persist(db, account_id, serial_number, CertPurpose::Authentication)
-            .await
-    }
-
-    /// Find active signing cert for account, or issue a new one and persist.
-    pub async fn get_or_issue_signing_cert(
-        &self,
-        db: &DatabaseConnection,
-        account_id: &str,
-        serial_number: &str,
-    ) -> Result<certificate::Model, ServiceError> {
-        if let Some(cert) = Self::find_active(db, account_id, "signing").await? {
-            return Ok(cert);
-        }
-        self.issue_and_persist(db, account_id, serial_number, CertPurpose::Signing)
+        let cert_purpose = match purpose {
+            "signing" => CertPurpose::Signing,
+            _ => CertPurpose::Authentication,
+        };
+        self.issue_and_persist(db, account_id, serial_number, cert_purpose)
             .await
     }
 

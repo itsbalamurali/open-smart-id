@@ -6,6 +6,11 @@ mod m20260323_000003_create_certificates;
 mod m20260323_000004_create_sessions;
 mod m20260323_000005_create_devices;
 mod m20260323_000006_add_rp_logo_website;
+mod m20260323_000007_create_admin_users;
+mod m20260323_000008_create_roles;
+mod m20260323_000009_create_admin_user_roles;
+mod m20260323_000010_create_audit_logs;
+mod m20260323_000011_seed_rbac;
 
 pub struct Migrator;
 
@@ -19,6 +24,11 @@ impl MigratorTrait for Migrator {
             Box::new(m20260323_000004_create_sessions::Migration),
             Box::new(m20260323_000005_create_devices::Migration),
             Box::new(m20260323_000006_add_rp_logo_website::Migration),
+            Box::new(m20260323_000007_create_admin_users::Migration),
+            Box::new(m20260323_000008_create_roles::Migration),
+            Box::new(m20260323_000009_create_admin_user_roles::Migration),
+            Box::new(m20260323_000010_create_audit_logs::Migration),
+            Box::new(m20260323_000011_seed_rbac::Migration),
         ]
     }
 }

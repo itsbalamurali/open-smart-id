@@ -7,6 +7,36 @@ use crate::services::relying_party::ServiceError;
 pub struct AccountService;
 
 impl AccountService {
+    super::impl_crud_basics!(account::Entity, "Account");
+
+    pub async fn list(
+        db: &DatabaseConnection,
+        page: u64,
+        per_page: u64,
+    ) -> Result<(Vec<account::Model>, u64), ServiceError> {
+        let paginator = account::Entity::find()
+            .order_by_desc(account::Column::CreatedAt)
+            .paginate(db, per_page);
+        let total = paginator.num_items().await.map_err(ServiceError::Db)?;
+        let items = paginator
+            .fetch_page(page - 1)
+            .await
+            .map_err(ServiceError::Db)?;
+        Ok((items, total))
+    }
+
+    pub async fn update_status(
+        db: &DatabaseConnection,
+        id: &str,
+        status: &str,
+    ) -> Result<account::Model, ServiceError> {
+        let acct = Self::find_by_id(db, id).await?;
+        let mut active: account::ActiveModel = acct.into();
+        active.status = Set(status.to_string());
+        active.updated_at = Set(Utc::now().into());
+        active.update(db).await.map_err(ServiceError::Db)
+    }
+
     /// Parse ETSI semantic ID (e.g. "PNOEE-48010010101") and find or create account.
     pub async fn find_or_create_by_semantic_id(
         db: &DatabaseConnection,

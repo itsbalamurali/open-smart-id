@@ -1,8 +1,14 @@
 use poem_openapi::Tags;
 
 pub mod admin;
+pub mod admin_audit_logs;
+pub mod admin_auth;
+pub mod admin_roles;
+pub mod admin_users;
 pub mod app;
+pub mod auth_guard;
 pub mod authentication;
+pub mod helpers;
 pub mod internal;
 pub mod session;
 pub mod signature;
@@ -24,6 +30,10 @@ pub enum ApiTags {
 }
 
 pub use admin::AdminApi;
+pub use admin_audit_logs::AdminAuditLogsApi;
+pub use admin_auth::AdminAuthApi;
+pub use admin_roles::AdminRolesApi;
+pub use admin_users::AdminUsersApi;
 pub use app::AppApi;
 pub use authentication::AuthenticationApi;
 pub use internal::InternalApi;

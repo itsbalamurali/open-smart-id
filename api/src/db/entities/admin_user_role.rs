@@ -1,0 +1,41 @@
+use sea_orm::entity::prelude::*;
+
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+#[sea_orm(table_name = "admin_user_roles")]
+pub struct Model {
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: String,
+    pub admin_user_id: String,
+    pub role_id: String,
+    pub created_at: DateTimeUtc,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::admin_user::Entity",
+        from = "Column::AdminUserId",
+        to = "super::admin_user::Column::Id"
+    )]
+    AdminUser,
+    #[sea_orm(
+        belongs_to = "super::role::Entity",
+        from = "Column::RoleId",
+        to = "super::role::Column::Id"
+    )]
+    Role,
+}
+
+impl Related<super::admin_user::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AdminUser.def()
+    }
+}
+
+impl Related<super::role::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Role.def()
+    }
+}
+
+impl ActiveModelBehavior for ActiveModel {}

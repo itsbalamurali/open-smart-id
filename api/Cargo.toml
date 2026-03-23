@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+argon2 = { version = "0.5", features = ["std"] }
+async-trait = "0.1"
 base64 = "0.22"
 chrono = "0.4"
 jsonwebtoken = "9"
