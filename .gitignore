@@ -1,0 +1,28 @@
+# OS
+.DS_Store
+
+# Rust
+api/target/
+api/*.db
+
+# Flutter
+app/.dart_tool/
+app/.packages
+app/build/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+
+# Node (site)
+site/node_modules/
+site/.next/
+site/out/
+site/.env*
+site/.vercel
+site/*.tsbuildinfo
+site/next-env.d.ts
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,17 @@
+{
+  "metadata": {
+    "title": "Open Smart-ID",
+    "description": "Open-source digital identity platform"
+  },
+  "home": {
+    "hero": "Your Digital Identity, Your Control",
+    "subtitle": "Open-source digital identity platform for secure authentication and digital signing.",
+    "getStarted": "Get Started",
+    "learnMore": "Learn More"
+  },
+  "nav": {
+    "home": "Home",
+    "docs": "Documentation",
+    "github": "GitHub"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "metadata": {
+    "title": "Open Smart-ID",
+    "description": "Avatud lähtekoodiga digitaalse identiteedi platvorm"
+  },
+  "home": {
+    "hero": "Sinu digitaalne identiteet, sinu kontroll",
+    "subtitle": "Avatud lähtekoodiga digitaalse identiteedi platvorm turvaliseks autentimiseks ja digitaalseks allkirjastamiseks.",
+    "getStarted": "Alusta",
+    "learnMore": "Loe lisaks"
+  },
+  "nav": {
+    "home": "Avaleht",
+    "docs": "Dokumentatsioon",
+    "github": "GitHub"
+  }
+}
